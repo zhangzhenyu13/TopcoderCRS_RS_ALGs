@@ -22,7 +22,7 @@ public class pathFactorModel extends Thread{
     }
 
     public void loadData(){
-
+        long t0 = System.currentTimeMillis();
         JSONObject obj=null;
         JSONArray m=null;
         JSONParser parser=new JSONParser();
@@ -50,7 +50,8 @@ public class pathFactorModel extends Thread{
 
             }
         }
-        System.out.println("loaded data from "+filename+",size="+n_user+", sparse "+countZero());
+        long t1 = System.currentTimeMillis();
+        System.out.println("loaded data from "+filename+",size="+n_user+", sparse "+countZero()+",in "+(t1-t0)+"ms");
 
     }
     public int countZero(){
@@ -65,7 +66,9 @@ public class pathFactorModel extends Thread{
     }
     //exponetial decay model for a full graph building
     public void connectWithExpLose(double alpha){
+        long t0 = System.currentTimeMillis();
         int [][]pathL=new int[(int) n_user][(int) n_user];
+
         for(int i=0;i<pathL.length;i++)
             for(int j=0;j<pathL[0].length;j++) {
                 if (UserMatrix[i][j] != 0 || i == j)
@@ -73,9 +76,15 @@ public class pathFactorModel extends Thread{
                 else
                     pathL[i][j]=1000000;
             }
-
+        long t1 = System.currentTimeMillis();
+        System.out.println("pathLen init finished in "+(t1-t0)+"ms");
         float curp=0;
         for(int k=0;k<n_user;k++){
+            if(k%100==0) {
+                t1 = System.currentTimeMillis();
+                System.out.println("k/n" + k + "/" + n_user+" in "+(t1-t0)+"ms");
+                t0 = System.currentTimeMillis();
+            }
             for(int i=0;i<n_user;i++){
                 for(int j=0;j<n_user;j++){
                     if(i==j) {
@@ -106,8 +115,9 @@ public class pathFactorModel extends Thread{
         for(int k=0;k<K;k++)
             for(int j=0;j<N;j++)
                 Q[k][j]=(float)0.0;
+        long t0 = System.currentTimeMillis();
         for(long step=0;step<steps;step++) {
-            long t0 = System.currentTimeMillis();
+
             for(int i=0;i<M;i++) {
                 for (int j = 0; j < N; j++) {
                     if(UserMatrix[i][j] != 0.0) {
@@ -139,6 +149,7 @@ public class pathFactorModel extends Thread{
             if((step + 1)%1 == 0){
                 long t1=System.currentTimeMillis();
                 System.out.println("filling "+filename+": step="+(step+1)+" ,e="+e+" ,time="+(t1-t0)+"ms");
+                t0 = System.currentTimeMillis();
             }
             if(e< 0.001)
                 break;
@@ -193,7 +204,75 @@ public class pathFactorModel extends Thread{
     }
     public static void main(String[] args)
     {
-        new ThreadsPool(1).start();
+        new ThreadsPool(1,5,20).start();
     }
+}
+
+class ThreadsPool extends Thread{
+    int max_threads_num;
+    int begin_cluster_no;
+    int clusers_num;
+    public ThreadsPool(int max_size,int begin,int clusters_num){
+        this.max_threads_num=max_size;
+        this.begin_cluster_no=begin;
+        this.clusers_num=clusters_num;
+    }
+    synchronized public void run(){
+        final int mode=1,choice=1;
+        ArrayList<pathFactorModel> pool_threads=new ArrayList<>();
+        for(int i=begin_cluster_no;i<clusers_num;i++) {
+            if(pool_threads.size()<max_threads_num){
+                System.out.println("adding thread to pools");
+                pathFactorModel pfm=new pathFactorModel(choice,i,mode,this);
+                pfm.start();
+                pool_threads.add(pfm);
+            }
+            else{
+                boolean tag=false;
+                for(int j=0;j<pool_threads.size();j++){
+
+                    pathFactorModel p=pool_threads.get(j);
+                    System.out.println(p.filename+" running:"+p.running+",checking");
+
+                    if(p.running==false) {
+                        System.out.println(p.filename+" fin,start new thread");
+                        tag=true;
+                        try {
+                            p.join();
+                            p=null;
+                            System.gc();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                        p=new pathFactorModel(choice,i,mode,this);
+                        pool_threads.set(j,p);
+                        p.start();
+                        break;
+                    }
+                }
+                if(tag==false){
+                    i--;
+                    System.out.println("pool manager wait,next #:"+(i+1));
+
+                    try {
+                        this.wait();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                    System.out.println("pool manager wake,next #:"+(i+1));
+                }
+            }
+
+        }
+
+        for(pathFactorModel p:pool_threads) {
+            try {
+                p.join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
 }
 
