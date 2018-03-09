@@ -51,8 +51,8 @@ public class pathFactorModel extends Thread{
             }
         }
         long t1 = System.currentTimeMillis();
-        System.out.println("loaded data from "+filename+",size="+n_user+", sparse "+countZero()+",in "+(t1-t0)+"ms");
 
+        System.out.println("loaded data from "+filename+",time cost "+(t1-t0)+"ms ,size="+n_user+", sparse "+countZero());
     }
     public int countZero(){
         int count=0;
@@ -63,6 +63,52 @@ public class pathFactorModel extends Thread{
                     //System.out.println(UserMatrix[i][j]);
                 }
         return count;
+    }
+    //data
+    class parallelSUbtask extends Thread{
+        float[][]UserMatrix;
+        long n_user;
+        int[][]pathL;
+        double alpha;
+        int k,begin,end;
+        boolean running=true;
+        pathFactorModel outer;
+        public parallelSUbtask(pathFactorModel outer,int k,int begin,int end,float[][]UserMatrix,long n_user,int[][]pathL,double alpha){
+            this.outer=outer;
+            this.k=k;
+            this.begin=begin;
+            this.end=end;
+            this.UserMatrix=UserMatrix;
+            this.n_user=n_user;
+            this.pathL=pathL;
+            this.alpha=alpha;
+        }
+        public void run(){
+            //System.out.println("in subtask thread, begin="+begin+", end="+end);
+            float curp=0;
+            for(int i=begin;i<this.end;i++){
+                for(int j=0;j<this.n_user;j++){
+                    if(i==j) {
+
+                        continue;
+                    }
+                    curp = (float) (this.UserMatrix[i][this.k]* Math.exp(-this.alpha*(this.pathL[i][this.k]+this.pathL[this.k][j]))
+                            * this.UserMatrix[this.k][j]);
+                    if(Math.abs(this.UserMatrix[i][j]) < Math.abs(curp)) {
+                        this.UserMatrix[i][j] = curp;
+                        this.pathL[i][j] = this.pathL[i][this.k]+this.pathL[this.k][j]+1;
+                        //if(curp>100)
+                        //    System.out.println(curp+", "+k+", "+pathL[i][k]+", "+pathL[k][j]+", "+UserMatrix[i][k]+", "+UserMatrix[k][j]);
+                    }
+                }
+            }
+            synchronized (this.outer){
+                this.running=false;
+                //System.out.println("sub task end:"+this.end);
+                this.outer.notify();
+
+            }
+        }
     }
     //exponetial decay model for a full graph building
     public void connectWithExpLose(double alpha){
@@ -78,29 +124,75 @@ public class pathFactorModel extends Thread{
             }
         long t1 = System.currentTimeMillis();
         System.out.println("pathLen init finished in "+(t1-t0)+"ms");
-        float curp=0;
+        final int sub_task_num=8;
+        int step=(int)this.n_user/sub_task_num;
+        ArrayList<parallelSUbtask> pools=new ArrayList<>();
+        int begin,end;
+
+
         for(int k=0;k<n_user;k++){
-            if(k%100==0) {
-                t1 = System.currentTimeMillis();
-                System.out.println("k/n" + k + "/" + n_user+" in "+(t1-t0)+"ms");
-                t0 = System.currentTimeMillis();
+            if((k+1)%100==0){
+                t1=System.currentTimeMillis();
+                System.out.println("k/n:"+k+"/"+n_user+", time cost="+(t1-t0)+"ms");
+                t0=System.currentTimeMillis();
             }
-            for(int i=0;i<n_user;i++){
-                for(int j=0;j<n_user;j++){
+            for(int i=0;i<sub_task_num*step;i+=step){
+                begin=i;
+                end=begin+step;
+                parallelSUbtask p=new parallelSUbtask(this,k,begin,end,UserMatrix,n_user,pathL,alpha);
+                p.start();
+                pools.add(p);
+            }
+            //System.out.println("main task, begin="+sub_task_num*step+", end="+n_user);
+            for(int i=sub_task_num*step;i<this.n_user;i++){
+                for(int j=0;j<this.n_user;j++){
                     if(i==j) {
 
                         continue;
                     }
-                    curp = (float) (UserMatrix[i][k]* Math.exp(-alpha*(pathL[i][k]+pathL[k][j])) * UserMatrix[k][j]);
-                    if(Math.abs(UserMatrix[i][j]) < Math.abs(curp)) {
-                        UserMatrix[i][j] = curp;
+                    float curp = (float) (this.UserMatrix[i][k]* Math.exp(-alpha*(pathL[i][k]+pathL[k][j]))
+                            * this.UserMatrix[k][j]);
+                    if(Math.abs(this.UserMatrix[i][j]) < Math.abs(curp)) {
+                        this.UserMatrix[i][j] = curp;
                         pathL[i][j] = pathL[i][k]+pathL[k][j]+1;
-                        //if(curp>100)
-                        //    System.out.println(curp+", "+k+", "+pathL[i][k]+", "+pathL[k][j]+", "+UserMatrix[i][k]+", "+UserMatrix[k][j]);
                     }
                 }
             }
+
+            boolean tag=true;
+            while(tag){
+                //System.out.println("sub task status checking");
+                tag=false;
+                for(int i=0;i<pools.size();i++){
+                    parallelSUbtask p=pools.get(i);
+                    if(p.running==false) {
+                        try {
+                            p.join();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                    else {
+                        //System.out.println("task end="+p.end+": "+p.running);
+                        tag=true;
+                        break;
+                    }
+
+                }
+                if(tag) {
+                    synchronized (this) {
+                        try {
+                            //System.out.println("waiting for wake up");
+                            this.wait();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            }
+
         }
+
     }
     //matrix factorization model for a full graph building
     public void matrix_factorization(int K,int M, int N,double alpha,double beta){
@@ -204,7 +296,7 @@ public class pathFactorModel extends Thread{
     }
     public static void main(String[] args)
     {
-        new ThreadsPool(1,5,20).start();
+        new ThreadsPool(1,0,20).start();
     }
 }
 
