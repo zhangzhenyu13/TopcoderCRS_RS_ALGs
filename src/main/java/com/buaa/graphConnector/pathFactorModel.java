@@ -68,6 +68,65 @@ public class pathFactorModel extends Thread{
         return count;
     }
 
+    //path search based exp losing method
+    public void searchPathFactor(){
+        float [][]searchMatrix=new float[(int) n_user][(int)n_user];
+        ArrayList<parallelSearchTask> pools=new ArrayList<>();
+        final int max_threads_num=16;
+        for(int i=0;i<n_user;i++){
+            if(pools.size()<max_threads_num) {
+                parallelSearchTask p = new parallelSearchTask(UserMatrix, searchMatrix, i, (int) n_user,this);
+                pools.add(p);
+                p.start();
+            }
+            else {
+                boolean tag=true;
+                for(int j=0;j<pools.size();j++){
+                    parallelSearchTask p=pools.get(j);
+                    //System.out.println("running checking, "+p.startid+" : "+p.running);
+                    if(p.running==false){
+                        try {
+                            p.join();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                        p=new parallelSearchTask(UserMatrix,searchMatrix,i,(int)n_user,this);
+                        pools.set(j,p);
+                        p.start();
+                        tag=false;
+                        break;
+                    }
+                }
+                if(tag) {
+                    synchronized (this) {
+                        try {
+                            //System.out.println("next startid=" + i + " wait");
+                            i--;
+                            this.wait();
+
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            }
+        }
+        for(int i=0;i<pools.size();i++){
+            parallelSearchTask p=pools.get(i);
+            if(p.running) {
+                try {
+                    p.join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+        for(int i=0;i<n_user;i++)
+            for(int j=0;j<n_user;j++){
+                if(UserMatrix[i][j]!=0||i!=j)
+                    UserMatrix[i][j]=searchMatrix[i][j];
+            }
+    }
 
     //exponetial decay model for a full graph building
     public void connectWithExpLose(double alpha){
@@ -83,9 +142,9 @@ public class pathFactorModel extends Thread{
             }
         long t1 = System.currentTimeMillis();
         System.out.println("pathLen init finished in "+(t1-t0)+"ms");
-        final int sub_task_num=16;
+        final int sub_task_num=15;
         int step=(int)this.n_user/sub_task_num;
-        ArrayList<parallelSUbtask> pools=new ArrayList<>();
+        ArrayList<parallelExpLoseSubtask> pools=new ArrayList<>();
         int begin,end;
         if(n_user<2000)
             step=0;
@@ -98,7 +157,7 @@ public class pathFactorModel extends Thread{
             for(int i=0;i<sub_task_num*step;i+=step){
                 begin=i;
                 end=begin+step;
-                parallelSUbtask p=new parallelSUbtask(this,k,begin,end,UserMatrix,n_user,pathL,alpha);
+                parallelExpLoseSubtask p=new parallelExpLoseSubtask(this,k,begin,end,UserMatrix,n_user,pathL,alpha);
                 p.start();
                 pools.add(p);
             }
@@ -109,8 +168,8 @@ public class pathFactorModel extends Thread{
 
                         continue;
                     }
-                    float curp = (float) (this.UserMatrix[i][k]* Math.exp(-alpha*(pathL[i][k]+pathL[k][j]+1))
-                            * this.UserMatrix[k][j]);
+                    float curp = (float) (this.UserMatrix[i][k]* Math.exp(-alpha*(pathL[k][j]+1))
+                            + this.UserMatrix[k][j]*Math.exp(-alpha*(pathL[i][k]+1)));
                     if(Math.abs(this.UserMatrix[i][j]) < Math.abs(curp)) {
                         this.UserMatrix[i][j] = curp;
                         pathL[i][j] = pathL[i][k]+pathL[k][j]+1;
@@ -123,7 +182,7 @@ public class pathFactorModel extends Thread{
                 //System.out.println("sub task status checking");
                 tag=false;
                 for(int i=0;i<pools.size();i++){
-                    parallelSUbtask p=pools.get(i);
+                    parallelExpLoseSubtask p=pools.get(i);
                     if(p.running==false) {
                         try {
                             p.join();
@@ -154,7 +213,11 @@ public class pathFactorModel extends Thread{
 
     }
     //matrix factorization model for a full graph building
-    public void matrix_factorization(int K,int M, int N,double alpha,double beta){
+    public void matrix_factorization(int M, int N,double alpha,double beta){
+
+        int K=(int)(Math.min(M,N)*0.008);
+        if(K<20)
+            K=20;
         System.out.println("para:"+K+","+M+","+N);
         float [][]P=new float[M][K];
         float [][]Q=new float[K][N];
@@ -242,14 +305,17 @@ public class pathFactorModel extends Thread{
         String savePath="";
 
         if(mode==1) {
-            this.connectWithExpLose(0.1);
-            savePath="data/fullGraph/full";
+            this.connectWithExpLose(0.01);
+            savePath="data/expLoseGraph/expL";
         }
         else if(mode==2){
-            this.matrix_factorization((int)(0.3*n_user),(int) n_user,(int) n_user,0.0002,0.02);
+            this.matrix_factorization((int) n_user,(int) n_user,0.0002,0.02);
             savePath="data/rebuildGraph/rebuild";
         }
-
+        else if(mode==3){
+            this.searchPathFactor();
+            savePath="data/searchGraph/search";
+        }
         JSONObject obj=new JSONObject();
         obj.put("n_users",n_user);
         obj.put("users",Users);
@@ -277,6 +343,7 @@ public class pathFactorModel extends Thread{
     }
     public static void main(String[] args)
     {
+
         new ThreadsPool(1,0,20).start();
     }
 }
@@ -291,7 +358,7 @@ class ThreadsPool extends Thread{
         this.clusers_num=clusters_num;
     }
     synchronized public void run(){
-        final int mode=1,choice=1;
+        final int mode=3,choice=1;
         ArrayList<pathFactorModel> pool_threads=new ArrayList<>();
         for(int i=begin_cluster_no;i<clusers_num;i++) {
             if(pool_threads.size()<max_threads_num){
@@ -305,10 +372,10 @@ class ThreadsPool extends Thread{
                 for(int j=0;j<pool_threads.size();j++){
 
                     pathFactorModel p=pool_threads.get(j);
-                    System.out.println(p.filename+" running:"+p.running+",checking");
+                    //System.out.println(p.filename+" running:"+p.running+",checking");
 
                     if(p.running==false) {
-                        System.out.println(p.filename+" fin,start new thread");
+                        //System.out.println(p.filename+" fin,start new thread");
                         tag=true;
                         try {
                             p.join();
@@ -325,14 +392,14 @@ class ThreadsPool extends Thread{
                 }
                 if(tag==false){
                     i--;
-                    System.out.println("pool manager wait,next #:"+(i+1));
+                    //System.out.println("pool manager wait,next #:"+(i+1));
 
                     try {
                         this.wait();
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
-                    System.out.println("pool manager wake,next #:"+(i+1));
+                    //System.out.println("pool manager wake,next #:"+(i+1));
                 }
             }
 
@@ -351,7 +418,7 @@ class ThreadsPool extends Thread{
 
 }
 
-class parallelSUbtask extends Thread{
+class parallelExpLoseSubtask extends Thread{
     float[][]UserMatrix;
     long n_user;
     int[][]pathL;
@@ -359,7 +426,7 @@ class parallelSUbtask extends Thread{
     int k,begin,end;
     boolean running=true;
     pathFactorModel outer;
-    public parallelSUbtask(pathFactorModel outer,int k,int begin,int end,float[][]UserMatrix,long n_user,int[][]pathL,double alpha){
+    public parallelExpLoseSubtask(pathFactorModel outer,int k,int begin,int end,float[][]UserMatrix,long n_user,int[][]pathL,double alpha){
         this.outer=outer;
         this.k=k;
         this.begin=begin;
@@ -378,8 +445,8 @@ class parallelSUbtask extends Thread{
 
                     continue;
                 }
-                curp = (float) (this.UserMatrix[i][this.k]* Math.exp(-this.alpha*(1+this.pathL[i][this.k]+this.pathL[this.k][j]))
-                        * this.UserMatrix[this.k][j]);
+                curp = (float) (this.UserMatrix[i][k]* Math.exp(-this.alpha*(1+this.pathL[k][j]))
+                        + this.UserMatrix[k][j]*Math.exp(-this.alpha*(1+pathL[i][k])));
                 if(Math.abs(this.UserMatrix[i][j]) < Math.abs(curp)) {
                     this.UserMatrix[i][j] = curp;
                     this.pathL[i][j] = this.pathL[i][this.k]+this.pathL[this.k][j]+1;
@@ -393,6 +460,128 @@ class parallelSUbtask extends Thread{
             //System.out.println("sub task end:"+this.end);
             this.outer.notify();
 
+        }
+    }
+}
+
+class parallelSearchTask extends Thread{
+    float[][] cost_m;
+    float[][] matrix_settings;
+    final int startid;
+    int targetid_num;
+    final static double alpha=0.01;
+    pathFactorModel outerSig;
+    boolean running=true;
+    class Node{
+        int id;
+        ArrayList<Float> cost=new ArrayList<>();
+
+        Node prevNode=null;
+        public Node(int id){
+            this.id=id;
+
+        }
+        public Node connectNode(int nextid,float cost){
+            Node node=new Node(nextid);
+            for(int i=0;i<this.cost.size();i++)
+                node.cost.add(i,this.cost.get(i));
+            node.cost.add(this.cost.size(),cost);
+            node.prevNode=this;
+            return node;
+        }
+        public ArrayList<Node> getNeighbors(){
+            int n=cost_m.length;
+            ArrayList<Node> nbs=new ArrayList<>();
+            for(int i=0;i<n;i++){
+                if(id==i||cost_m[id][i]==0)
+                    continue;
+                Node nb=this.connectNode(i,cost_m[id][i]);
+                nbs.add(nb);
+            }
+            return nbs;
+        }
+        public boolean sameNode(Node node){
+            return this.id==node.id;
+        }
+        public float getValue(){
+            float value=0;
+            int L=this.cost.size();
+            for(int i=0;i<this.cost.size();i++){
+                value+=this.cost.get(i)*Math.exp(-alpha*(L-i));
+            }
+            return value;
+        }
+    }
+    public parallelSearchTask(float[][] cost_m,float[][]matrix_settings,int startid,int targetid_num,pathFactorModel outerSig){
+        this.cost_m=cost_m;
+        this.matrix_settings=matrix_settings;
+        this.startid=startid;
+        this.targetid_num=targetid_num;
+        this.outerSig=outerSig;
+    }
+    public void run(){
+        System.out.println("starid "+startid+" is running "+this.running+", search size="+targetid_num);
+        for(int targetid=0;targetid<targetid_num;targetid++) {
+            //System.out.println("searching from "+startid+" to "+targetid);
+            if(targetid==startid||cost_m[startid][targetid]!=0)
+                continue;
+
+            ArrayList<Node> openT = new ArrayList<>(), closeT = new ArrayList<>();
+            Node cur = new Node(startid);
+            Node target = new Node(targetid);
+            openT.add(cur);
+            int pos;
+
+            while (openT.size() > 0) {
+                cur = openT.get(0);
+                openT.remove(0);
+                closeT.add(cur);
+                if (cur.sameNode(target)) {
+                    target = cur;
+                    System.out.println("found target " + target.id+" from start "+startid+" value="+target.getValue());
+                    break;
+                }
+                ArrayList<Node> nbs = cur.getNeighbors();
+                for (Node node : nbs) {
+                    //for each node in neighbors
+                    boolean tag=false;//in closeT ?
+                    for (int i = 0; i < closeT.size(); i++) {
+                        if (node.sameNode(closeT.get(i))) {
+                            tag=true;
+                            break;
+                        }
+                    }
+                    if(tag)
+                        continue;
+                    //in openT ?
+                    for(int i=0;i<openT.size();i++){
+                        if(node.sameNode(openT.get(i))){
+                            tag=true;
+                            if(openT.get(i).getValue()<node.getValue()){
+                                openT.remove(i);
+                                tag=false;
+                            }
+                            break;
+                        }
+                    }
+                    if(tag)
+                        continue;
+                    //find pos to insert node
+                    for (pos = 0; pos < openT.size(); pos++) {
+                        if (Math.abs(openT.get(pos).getValue()) < Math.abs(node.getValue()))
+                            break;
+                    }
+                    openT.add(pos, node);
+                }
+                //System.out.println("from "+startid+" to "+targetid+", openT size="+openT.size()+", closeT size="+closeT.size());
+            }
+
+            this.matrix_settings[startid][targetid] = target.getValue();
+        }
+        synchronized (outerSig){
+            this.running=false;
+            //System.out.println("startID "+startid+" finished searching");
+            this.outerSig.notify();
         }
     }
 }
