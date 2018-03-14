@@ -1,6 +1,6 @@
-data/
+data/*
 *.class
-target/
-.idea/
-out/
+target/*
+.idea/*
+out/*
 
